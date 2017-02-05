@@ -1,0 +1,104 @@
+---
+title: "BridgingTheGap"
+output: html_document
+---
+
+```{r, echo = FALSE}
+# load requisite packages
+library(plyr)
+library(choroplethr)
+library(dplyr)
+library(readr)
+library(data.table)
+library(ggplot2)
+
+# Find column type; store in classes
+dest = "https://www.fhwa.dot.gov/bridge/nbi/2016/delimited/AK16.txt"
+tmp = fread(dest) 
+tmp = as.tbl(tmp)
+classes = sapply(tmp, class)
+
+# Get state + territory names
+states= read_csv("http://pages.stat.wisc.edu/~karlrohe/classes/data/stateAbv.txt")
+states=states[-(1:12),]
+states[51,] = c("WashDC", "DC")
+states[52,] = c("Puerto Rico", "PR")
+dat=list()
+
+# Re-read with proper column types to avoid parse errors
+dest= rep("", 52)
+for(i in 1:52) dest[i]=paste("https://www.fhwa.dot.gov/bridge/nbi/2016/delimited/", states[i,2],"16.txt", sep = "") 
+x16 = ldply(dest, fread, colClasses = classes)  
+
+# Reduce dataset to fewer variables, further ditching those with major absences
+M<- select(x16, c(1:2, 13, 16,20:21,27,30,31,33:36,41,48:49,67:71, 73, 75,102))
+M<- as.tbl(M)
+is.na(M) %>% colSums %>% hist(breaks = 100)
+fun = function(x){ return(which(x>20)) }
+(bad =  is.na(M) %>% colSums %>% fun)
+M = M[,-bad]
+
+# Let's look at North Carolina!) for little to no actual reason
+NC<- filter(M,STATE_CODE_001 == 37)
+
+# First we see the av. daily traffic, and we see a general increase over time
+# Some bridge had a ridiculous amount of traffic in 1980 (allegedly)
+# Let's find that bridge ID and see if we should we remove it
+NC %>% filter(YEAR_ADT_030 > 1500) %>% ggplot() + geom_count(aes(x = YEAR_ADT_030, y = ADT_029)) + labs(x= "YEAR RECORDED", y = "Average Daily Traffic", title = "Traffic on NC Bridges")
+
+# It's Gordon Street Bridge!
+NC$FACILITY_CARRIED_007[NC$YEAR_ADT_030 < 1990 & NC$ADT_029 >100000]
+# I doubt Gordon Street Bridge got~ 500,000 cars a day in 1980
+# Either there's a typo or someone is aggrandizing the tourism in NC, who knows
+# Let's remove it and try that above graph a second time
+
+# We get a better look at the general change in daily traffic over the years
+NC %>% filter(YEAR_ADT_030 > 1500, ADT_029 > 0) %>% filter(STRUCTURE_NUMBER_008 != "000000001070081")%>% ggplot() + geom_count(aes(x = YEAR_ADT_030, y = ADT_029)) + labs(x= "YEAR RECORDED", y = "Average Daily Traffic", title = "Traffic on NC Bridges") + geom_smooth(aes(YEAR_ADT_030, y = ADT_029))
+
+# Altering Karl's code to rate condition of bridges
+NC = mutate(NC, overall = pmin(DECK_COND_058, SUPERSTRUCTURE_COND_059, SUBSTRUCTURE_COND_060, CHANNEL_COND_061,CULVERT_COND_062, na.rm = T))
+
+rating = function(overall){
+  rate = rep("good", length(overall))
+  rate[overall<5] = "bad"
+  rate[overall<2]= "fail"
+  rate[overall > 7] = "great"
+  return(rate)
+}
+NC$cond = rating(NC$overall)
+
+# Adding some names to the materials used in building the bridges
+NC = filter(NC, cond>1)
+strucNames<- c("Concrete"
+ , "Concrete continuous"
+ , "Steel"
+ , "Steel continuous"
+ , "Prestressed concrete"
+ , "Prestressed concrete continuous"
+ , "Wood or Timber"
+ , "Masonry"
+ , "Aluminum, Wrought Iron, or Cast Iron"
+ , "Other")
+# Bridges appear to be built wider and wider as time goes on
+# Timber bridges are surprisingly a more recent thing
+# Steel Continuous bridges are generally the most used for wider application
+NC$STRUCTURE_KIND_043A = factor(NC$STRUCTURE_KIND_043A)
+levels(NC$STRUCTURE_KIND_043A) = strucNames
+NC %>% filter(APPR_WIDTH_MT_032 >0) %>% filter(DECK_COND_058 != "N") %>% ggplot(aes(x = YEAR_BUILT_027, y = APPR_WIDTH_MT_032)) + geom_hex() + labs(y = "Width in Meters", x = "Year Built", title = "North Carolina Bridge Types") + facet_wrap(~factor(STRUCTURE_KIND_043A))
+
+# Assessing quality based on material, we see a few immediate things
+# Masonry accounts for all failing bridges, and a lot of the poor ones as well!
+# Timber bridges are amongst the better ones (recency?)
+# Steel continuous bridges are also big recently, but have poor marks here
+ggplot(data = NC) + geom_bar(aes(x = factor(cond), fill = factor(STRUCTURE_KIND_043A)), position = "fill") +coord_flip() + labs(y = "Proportion", x= "Quality Level", fill = "Material")
+
+# Boxplots of skewness based on bridge quality and Historic status
+# Bridges considered historic or on their way to being historic are generally not bad or failing
+# More historic bridges are not immune to some skew, however
+# The very skewed bridges are generally disqualified from being historic
+NC$HISTORY_037= factor(NC$HISTORY_037)
+levels(NC$HISTORY_037) = c("Definitively Historic", "Qualified", "Possibly Qualified", "Indeterminable", "Disqualified")
+ggplot(NC) + geom_boxplot(aes(x = cond, y = DEGREES_SKEW_034)) + facet_wrap(~factor(HISTORY_037))
+
+
+```
